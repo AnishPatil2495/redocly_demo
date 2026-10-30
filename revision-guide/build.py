@@ -11,6 +11,7 @@ from pygments.formatters import HtmlFormatter
 
 ROOT = Path(__file__).parent
 SRC = ROOT / "src"
+THEORY = ROOT / "theory"
 HTML_OUT = ROOT / "build" / "guide.html"
 PDF_OUT = ROOT / "Full-Stack-Revision-Guide.pdf"
 
@@ -47,12 +48,18 @@ blockquote { border-left: 4px solid #d0d7de; margin: 8px 0; padding: 2px 12px; c
 .toc li.l1 { font-weight: bold; margin-top: 8px; }
 .toc li.l2 { padding-left: 18px; font-size: 9.5pt; }
 .toc a { color: #1f2328; text-decoration: none; }
+.theory { background: #eef4ff; border: 1px solid #c6d7f5; border-left: 5px solid #2f6fdb;
+          border-radius: 6px; padding: 4px 14px 6px 14px; margin: 10px 0 16px 0; }
+.theory .label { font-weight: bold; color: #2f6fdb; font-size: 9pt; text-transform: uppercase;
+                 letter-spacing: 0.5px; margin: 8px 0 2px 0; }
+.theory pre { background: #fbfcff; }
+.theory table { background: #fff; }
 """
 
 COVER = """
 <div class="cover">
   <h1>Full-Stack Developer<br>Revision Guide</h1>
-  <div class="sub">Basics to Advanced — with coding examples</div>
+  <div class="sub">Basics to Advanced — beginner-friendly explanations with coding examples</div>
   <div class="topics">
     JavaScript (ES2024+) &nbsp;•&nbsp; TypeScript<br>
     React (18 / 19) &nbsp;•&nbsp; Node.js &amp; Express<br>
@@ -67,8 +74,52 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def load_theory() -> dict[str, str]:
+    """Parse theory/*.md files: sections start with '== <key>' (e.g. '== 1.4' or '== intro')."""
+    theory = {}
+    for path in sorted(THEORY.glob("*.md")):
+        part = path.name.split("-")[0].lstrip("0") or "0"
+        for chunk in re.split(r"^== ", path.read_text(), flags=re.M)[1:]:
+            key, _, body = chunk.partition("\n")
+            key = key.strip()
+            theory[f"{part}:intro" if key == "intro" else key] = body.strip()
+    return theory
+
+
+def inject_theory(md_text: str, theory: dict[str, str], blocks: list[str]) -> str:
+    """Place a placeholder paragraph for each theory block right after its heading."""
+    out = []
+    for line in md_text.splitlines():
+        out.append(line)
+        key = None
+        if m := re.match(r"^# Part (\d+)\b", line):
+            key = f"{m.group(1)}:intro"
+        elif m := re.match(r"^## (\d+\.\d+) ", line):
+            key = m.group(1)
+        if key and key in theory:
+            blocks.append(theory.pop(key))
+            out += ["", f"THEORYBLOCK{len(blocks) - 1}", ""]
+    if theory:
+        raise SystemExit(f"Unused theory sections: {sorted(theory)}")
+    return "\n".join(out)
+
+
+def render_theory(blocks: list[str], body: str) -> str:
+    for i, block in enumerate(blocks):
+        html = markdown.markdown(
+            block,
+            extensions=["fenced_code", "tables", "codehilite", "sane_lists"],
+            extension_configs={"codehilite": {"guess_lang": False, "css_class": "codehilite"}},
+        )
+        box = f'<div class="theory"><div class="label">Understand the concept</div>{html}</div>'
+        body = body.replace(f"<p>THEORYBLOCK{i}</p>", box)
+    return body
+
+
 def build_html() -> str:
     md_text = "\n\n".join(p.read_text() for p in sorted(SRC.glob("*.md")))
+    blocks: list[str] = []
+    md_text = inject_theory(md_text, load_theory(), blocks)
     md = markdown.Markdown(
         extensions=["fenced_code", "tables", "codehilite", "toc", "sane_lists"],
         extension_configs={
@@ -76,7 +127,7 @@ def build_html() -> str:
             "toc": {"slugify": lambda value, sep: slugify(value), "toc_depth": "1-2"},
         },
     )
-    body = md.convert(md_text)
+    body = render_theory(blocks, md.convert(md_text))
 
     toc_items = []
     for token in md.toc_tokens:
